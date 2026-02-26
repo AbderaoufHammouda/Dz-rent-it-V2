@@ -7,6 +7,7 @@ import django.db.models.deletion
 import django.utils.timezone
 import uuid
 from django.conf import settings
+from django.contrib.postgres.operations import BtreeGistExtension
 from django.db import migrations, models
 
 
@@ -16,10 +17,10 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('auth', '0012_alter_user_first_name_max_length'),
-        ('core', '0001_btree_gist'),
     ]
 
     operations = [
+        BtreeGistExtension(),
         migrations.CreateModel(
             name='User',
             fields=[

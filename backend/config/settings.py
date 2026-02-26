@@ -39,8 +39,12 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     # ── PostgreSQL-specific features (ExclusionConstraint, GiST, etc.) ──
     'django.contrib.postgres',
+    # ── Third-party ──
+    'rest_framework',
+    'django_filters',
     # ── Project apps ──
     'core',
+    'api',
 ]
 
 MIDDLEWARE = [
@@ -140,3 +144,40 @@ MEDIA_ROOT = BASE_DIR / 'media'
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DJANGO REST FRAMEWORK
+# ═══════════════════════════════════════════════════════════════════════════════
+
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'PAGE_SIZE': 20,
+    'DEFAULT_FILTER_BACKENDS': [
+        'django_filters.rest_framework.DjangoFilterBackend',
+    ],
+    'EXCEPTION_HANDLER': 'api.exception_handler.custom_exception_handler',
+}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SIMPLE JWT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from datetime import timedelta  # noqa: E402
+
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': False,
+    'AUTH_HEADER_TYPES': ('Bearer',),
+    'USER_ID_FIELD': 'id',
+    'USER_ID_CLAIM': 'user_id',
+}

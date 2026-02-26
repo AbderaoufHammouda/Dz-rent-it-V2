@@ -1,35 +1,34 @@
 /**
  * DZ-RentIt — Authentication Context
  * ====================================
- * 
+ *
  * ARCHITECTURE DECISION:
  * Context API chosen over Zustand/Redux because:
  * 1. Auth state is a single concern — no complex middleware needed
  * 2. Provider pattern ensures auth is available everywhere
  * 3. Simpler to defend during soutenance
  * 4. No additional dependency
- * 
+ *
  * Features:
- * - JWT token storage in localStorage
- * - Auto-login on app refresh (token validation)
- * - Token expiration detection
+ * - JWT dual-token storage (access + refresh) in localStorage
+ * - Auto-login on app refresh (token validation via /auth/me/)
+ * - Token expiration detection (standard JWT payload decode)
  * - Loading state for auth resolution
  * - Logout with cleanup
  */
 
 import { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import { authAPI } from '../services/api.js';
+import { ACCESS_KEY, REFRESH_KEY } from '../api/axios.js';
 
 /** @type {React.Context<import('../types/index.js').AuthState & { login, register, logout, updateUser }>} */
 const AuthContext = createContext(null);
 
-const TOKEN_KEY = 'dz_rentit_token';
 const USER_KEY = 'dz_rentit_user';
 
 /**
  * Check if a JWT token is expired.
  * Decodes the payload without a library — works for standard JWTs.
- * Falls back to false for mock tokens.
  */
 function isTokenExpired(token) {
   if (!token) return true;
@@ -37,25 +36,24 @@ function isTokenExpired(token) {
     const payload = JSON.parse(atob(token.split('.')[1]));
     return payload.exp * 1000 < Date.now();
   } catch {
-    // Mock tokens don't have JWT structure — treat as valid
-    return false;
+    return true;
   }
 }
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
-  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY));
+  const [token, setToken] = useState(() => localStorage.getItem(ACCESS_KEY));
   const [loading, setLoading] = useState(true); // true until initial auth check completes
 
   // ── Auto-login on mount ──────────────────────────────────────────────────
   useEffect(() => {
     async function initAuth() {
-      const savedToken = localStorage.getItem(TOKEN_KEY);
-      const savedUser = localStorage.getItem(USER_KEY);
+      const savedToken = localStorage.getItem(ACCESS_KEY);
 
       if (!savedToken || isTokenExpired(savedToken)) {
-        // No valid token → clear and finish
-        localStorage.removeItem(TOKEN_KEY);
+        // No valid access token → clear and finish
+        localStorage.removeItem(ACCESS_KEY);
+        localStorage.removeItem(REFRESH_KEY);
         localStorage.removeItem(USER_KEY);
         setToken(null);
         setUser(null);
@@ -68,9 +66,10 @@ export function AuthProvider({ children }) {
         const { user: freshUser } = await authAPI.me();
         setUser(freshUser);
         setToken(savedToken);
-      } catch (error) {
+      } catch {
         // Token invalid on server side → clean up
-        localStorage.removeItem(TOKEN_KEY);
+        localStorage.removeItem(ACCESS_KEY);
+        localStorage.removeItem(REFRESH_KEY);
         localStorage.removeItem(USER_KEY);
         setToken(null);
         setUser(null);
@@ -83,32 +82,31 @@ export function AuthProvider({ children }) {
   }, []);
 
   // ── Login ────────────────────────────────────────────────────────────────
+  // authAPI.login() already stores tokens in localStorage and returns {user, token}
   const login = useCallback(async (email, password) => {
-    const { user: loggedInUser, token: newToken } = await authAPI.login(email, password);
-    
-    localStorage.setItem(TOKEN_KEY, newToken);
-    localStorage.setItem(USER_KEY, JSON.stringify(loggedInUser));
-    setToken(newToken);
+    const { user: loggedInUser, token: accessToken } = await authAPI.login(email, password);
+
+    setToken(accessToken);
     setUser(loggedInUser);
-    
+
     return loggedInUser;
   }, []);
 
   // ── Register ─────────────────────────────────────────────────────────────
+  // authAPI.register() creates account then auto-logs in, returns {user, token}
   const register = useCallback(async (name, email, password) => {
-    const { user: newUser, token: newToken } = await authAPI.register(name, email, password);
-    
-    localStorage.setItem(TOKEN_KEY, newToken);
-    localStorage.setItem(USER_KEY, JSON.stringify(newUser));
-    setToken(newToken);
+    const { user: newUser, token: accessToken } = await authAPI.register(name, email, password);
+
+    setToken(accessToken);
     setUser(newUser);
-    
+
     return newUser;
   }, []);
 
   // ── Logout ───────────────────────────────────────────────────────────────
   const logout = useCallback(() => {
-    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(ACCESS_KEY);
+    localStorage.removeItem(REFRESH_KEY);
     localStorage.removeItem(USER_KEY);
     setToken(null);
     setUser(null);

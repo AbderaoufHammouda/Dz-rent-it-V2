@@ -1,59 +1,19 @@
 /**
  * DZ-RentIt — API Service Layer
  * ==============================
- * 
+ *
  * ARCHITECTURE DECISION:
  * All API calls are abstracted behind service functions.
- * Currently uses a mock adapter (simulates network delay + returns mock data).
- * When the real backend is ready, ONLY this file changes — zero component edits.
- * 
- * This pattern is critical for:
- * 1. Decoupling UI from data layer
- * 2. Enabling easy backend swap during integration
- * 3. Simulating realistic async flows (loading states, errors)
- * 4. Defending architecture choices during soutenance
+ * Hooks/components call these exported objects; they never touch axios directly.
+ * If the backend contract changes, ONLY this file changes — zero component edits.
+ *
+ * Each entity has a normalizer that converts snake_case backend fields
+ * to the camelCase shape the UI already expects.
  */
 
-const API_BASE = import.meta.env.VITE_API_URL || '/api';
-const MOCK_DELAY = 600; // ms — simulate network latency
+import api, { ACCESS_KEY, REFRESH_KEY } from '../api/axios.js';
 
-// ─── HTTP Client ────────────────────────────────────────────────────────────
-
-/**
- * Base fetch wrapper with auth token injection and error handling.
- * When backend is ready, this becomes the single connection point.
- */
-async function request(endpoint, options = {}) {
-  const token = localStorage.getItem('dz_rentit_token');
-  
-  const config = {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...options.headers,
-    },
-    ...options,
-  };
-
-  // ── MOCK MODE: Simulate API with delay ──
-  // Remove this block when connecting to real backend
-  if (import.meta.env.VITE_USE_MOCK !== 'false') {
-    return mockRequest(endpoint, config);
-  }
-
-  // ── REAL MODE: Uncomment when backend ready ──
-  // const response = await fetch(`${API_BASE}${endpoint}`, config);
-  // if (response.status === 401) {
-  //   localStorage.removeItem('dz_rentit_token');
-  //   window.location.href = '/login';
-  //   throw new Error('Session expired');
-  // }
-  // if (!response.ok) {
-  //   const error = await response.json().catch(() => ({}));
-  //   throw new ApiError(error.message || 'Request failed', response.status, error);
-  // }
-  // return response.json();
-}
+// ─── Error helpers ──────────────────────────────────────────────────────────
 
 class ApiError extends Error {
   constructor(message, status, data) {
@@ -64,213 +24,416 @@ class ApiError extends Error {
   }
 }
 
-// ─── Mock Request Adapter ───────────────────────────────────────────────────
-
-/** @type {Map<string, Function>} */
-const mockHandlers = new Map();
-
-function registerMock(method, pattern, handler) {
-  mockHandlers.set(`${method}:${pattern}`, handler);
-}
-
-async function mockRequest(endpoint, config) {
-  await new Promise((r) => setTimeout(r, MOCK_DELAY));
-
-  const method = (config.method || 'GET').toUpperCase();
-  
-  // Try exact match first, then pattern match
-  for (const [key, handler] of mockHandlers) {
-    const [m, pattern] = key.split(':');
-    if (m !== method) continue;
-    
-    const regex = new RegExp(`^${pattern.replace(/:\w+/g, '([^/]+)')}$`);
-    const match = endpoint.match(regex);
-    if (match) {
-      const params = match.slice(1);
-      const body = config.body ? JSON.parse(config.body) : null;
-      return handler({ params, body, endpoint });
+/** Extract a user-friendly message from an axios error response. */
+function extractError(err) {
+  const d = err.response?.data;
+  if (!d) return err.message || 'Something went wrong';
+  if (typeof d.error === 'string') return d.error;
+  if (typeof d.detail === 'string') return d.detail;
+  if (typeof d === 'object') {
+    const msgs = [];
+    for (const [key, val] of Object.entries(d)) {
+      if (Array.isArray(val)) msgs.push(`${key}: ${val.join(', ')}`);
+      else if (typeof val === 'string') msgs.push(val);
     }
+    if (msgs.length) return msgs.join('. ');
   }
-
-  throw new ApiError(`Mock not found: ${method} ${endpoint}`, 404, {});
+  return err.message || 'Something went wrong';
 }
 
-// ─── Lazy import mock data (avoids circular deps) ──────────────────────────
-
-let _mockData = null;
-async function getMockData() {
-  if (!_mockData) {
-    _mockData = await import('../data/mockData.js');
+/** Wrap an axios call: unwrap .data on success, throw ApiError on failure. */
+async function request(fn) {
+  try {
+    const response = await fn();
+    return response.data;
+  } catch (err) {
+    throw new ApiError(
+      extractError(err),
+      err.response?.status || 500,
+      err.response?.data || {},
+    );
   }
-  return _mockData;
 }
 
-// ─── Register Mock Handlers ─────────────────────────────────────────────────
+// ─── Normalizers ────────────────────────────────────────────────────────────
+// Convert Django snake_case → frontend camelCase shape.
 
-// Auth
-registerMock('POST', '/auth/login', async ({ body }) => {
-  const data = await getMockData();
-  const user = data.owners[0]; // Simulate logged-in user
-  return { user: { ...user, email: body.email }, token: 'mock-jwt-token-' + Date.now() };
-});
-
-registerMock('POST', '/auth/register', async ({ body }) => {
+function normalizeUser(u) {
+  if (!u) return null;
   return {
-    user: { id: 'new-' + Date.now(), name: body.name, email: body.email, avatar: '', rating: 0, reviewCount: 0, verified: false },
-    token: 'mock-jwt-token-' + Date.now(),
+    id: u.id,
+    name:
+      u.first_name && u.last_name
+        ? `${u.first_name} ${u.last_name}`.trim()
+        : u.username || '',
+    username: u.username,
+    email: u.email,
+    firstName: u.first_name,
+    lastName: u.last_name,
+    avatar: u.avatar || '',
+    rating: parseFloat(u.rating_avg) || 0,
+    reviewCount: u.review_count || 0,
+    verified: u.is_verified || false,
+    phone: u.phone || '',
+    bio: u.bio || '',
+    location: u.location || '',
+    memberSince: u.created_at
+      ? new Date(u.created_at).getFullYear().toString()
+      : '',
+    createdAt: u.created_at,
   };
-});
+}
 
-registerMock('GET', '/auth/me', async () => {
-  const data = await getMockData();
-  return { user: { ...data.owners[0], email: 'demo@dzrentit.com' } };
-});
-
-// Items
-registerMock('GET', '/items', async () => {
-  const data = await getMockData();
-  return { items: data.items, total: data.items.length };
-});
-
-registerMock('GET', '/items/:id', async ({ params }) => {
-  const data = await getMockData();
-  const item = data.items.find((i) => i.id === params[0]);
-  if (!item) throw new ApiError('Item not found', 404, {});
-  return { item };
-});
-
-registerMock('POST', '/items', async ({ body }) => {
-  return { item: { id: 'item-' + Date.now(), ...body, createdAt: new Date().toISOString() } };
-});
-
-registerMock('PUT', '/items/:id', async ({ params, body }) => {
-  const data = await getMockData();
-  const item = data.items.find((i) => i.id === params[0]);
-  return { item: { ...item, ...body } };
-});
-
-registerMock('DELETE', '/items/:id', async ({ params }) => {
-  return { success: true, itemId: params[0] };
-});
-
-// Bookings
-registerMock('GET', '/bookings', async () => {
-  const data = await getMockData();
-  return { bookings: data.bookings };
-});
-
-registerMock('POST', '/bookings', async ({ body }) => {
+function normalizeItem(item) {
+  if (!item) return null;
   return {
-    booking: {
-      id: 'booking-' + Date.now(),
-      ...body,
-      status: 'pending',
-      createdAt: new Date().toISOString(),
-    },
+    id: item.id,
+    title: item.title,
+    description: item.description || '',
+    category: (item.category_name || '').toLowerCase(),
+    categoryId: item.category,
+    categoryName: item.category_name || '',
+    price: parseFloat(item.price_per_day) || 0,
+    deposit: parseFloat(item.deposit_amount) || 0,
+    location: item.location || '',
+    condition: item.condition || '',
+    available: item.is_active !== false,
+    owner: normalizeUser(item.owner),
+    ownerId: item.owner?.id,
+    images:
+      item.images?.map((img) => (typeof img === 'string' ? img : img.image)) ||
+      (item.cover_image ? [item.cover_image] : []),
+    coverImage: item.cover_image || (item.images?.[0]?.image ?? ''),
+    rating: parseFloat(item.owner?.rating_avg) || 0,
+    reviewCount: item.owner?.review_count || 0,
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
   };
-});
+}
 
-registerMock('PATCH', '/bookings/:id/approve', async ({ params }) => {
-  return { booking: { id: params[0], status: 'approved', approvedAt: new Date().toISOString() } };
-});
+function normalizeBooking(b) {
+  if (!b) return null;
+  return {
+    id: b.id,
+    item: b.item_title
+      ? { id: b.item, title: b.item_title }
+      : typeof b.item === 'object'
+        ? normalizeItem(b.item)
+        : { id: b.item },
+    itemId: typeof b.item === 'object' ? b.item?.id : b.item,
+    renter: normalizeUser(b.renter),
+    renterId: b.renter?.id,
+    owner: normalizeUser(b.owner),
+    ownerId: b.owner?.id,
+    startDate: b.start_date,
+    endDate: b.end_date,
+    status: b.status,
+    totalDays: b.total_days,
+    baseTotal: parseFloat(b.base_total) || 0,
+    discountRate: parseFloat(b.discount_rate) || 0,
+    discountAmount: parseFloat(b.discount_amount) || 0,
+    finalTotal: parseFloat(b.final_total) || 0,
+    deposit: parseFloat(b.deposit) || 0,
+    createdAt: b.created_at,
+    updatedAt: b.updated_at,
+  };
+}
 
-registerMock('PATCH', '/bookings/:id/reject', async ({ params }) => {
-  return { booking: { id: params[0], status: 'rejected', rejectedAt: new Date().toISOString() } };
-});
+function normalizeReview(r) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    bookingId: r.booking,
+    reviewer: normalizeUser(r.reviewer),
+    reviewerId: r.reviewer?.id,
+    reviewedUser: normalizeUser(r.reviewed_user),
+    targetUserId: r.reviewed_user?.id,
+    direction: r.direction,
+    rating: r.rating,
+    comment: r.comment,
+    createdAt: r.created_at,
+  };
+}
 
-registerMock('PATCH', '/bookings/:id/cancel', async ({ params }) => {
-  return { booking: { id: params[0], status: 'cancelled', cancelledAt: new Date().toISOString() } };
-});
+function normalizeMessage(m) {
+  if (!m) return null;
+  return {
+    id: m.id,
+    senderId: m.sender,
+    senderName: m.sender_username || '',
+    text: m.content,
+    read: m.is_read ?? false,
+    createdAt: m.created_at,
+  };
+}
 
-// Reviews
-registerMock('GET', '/items/:id/reviews', async ({ params }) => {
-  const data = await getMockData();
-  const reviews = data.reviews.filter((r) => r.itemId === params[0]);
-  return { reviews };
-});
+function normalizeConversation(c) {
+  if (!c) return null;
+  return {
+    id: c.id,
+    participants: [c.participant_1?.id, c.participant_2?.id].filter(Boolean),
+    participant1: normalizeUser(c.participant_1),
+    participant2: normalizeUser(c.participant_2),
+    bookingId: c.booking,
+    lastMessage: c.last_message ? normalizeMessage(c.last_message) : null,
+    unreadCount: c.unread_count || 0,
+    createdAt: c.created_at,
+    updatedAt: c.updated_at,
+  };
+}
 
-registerMock('POST', '/reviews', async ({ body }) => {
-  return { review: { id: 'review-' + Date.now(), ...body, createdAt: new Date().toISOString() } };
-});
+/** Extract array from a DRF response (handles paginated & unpaginated). */
+function unwrapList(data) {
+  if (Array.isArray(data)) return data;
+  if (data?.results && Array.isArray(data.results)) return data.results;
+  return [];
+}
 
-// Messages
-registerMock('GET', '/conversations', async () => {
-  const data = await getMockData();
-  return { conversations: data.conversations || [] };
-});
-
-registerMock('GET', '/conversations/:id/messages', async () => {
-  const data = await getMockData();
-  return { messages: data.messages || [] };
-});
-
-registerMock('POST', '/conversations/:id/messages', async ({ body }) => {
-  return { message: { id: 'msg-' + Date.now(), ...body, createdAt: new Date().toISOString(), read: false } };
-});
-
-// Availability
-registerMock('GET', '/items/:id/availability', async ({ params }) => {
-  const data = await getMockData();
-  const avail = data.availabilityData?.[params[0]] || {};
-  return { availability: avail };
-});
-
-registerMock('PATCH', '/items/:id/availability', async ({ params, body }) => {
-  return { success: true, itemId: params[0], dates: body.dates };
-});
-
-// Categories
-registerMock('GET', '/categories', async () => {
-  const data = await getMockData();
-  return { categories: data.categories };
-});
-
-// ─── Exported API Service Functions ─────────────────────────────────────────
+// ─── Auth API ───────────────────────────────────────────────────────────────
 
 export const authAPI = {
-  login: (email, password) =>
-    request('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
-  
-  register: (name, email, password) =>
-    request('/auth/register', { method: 'POST', body: JSON.stringify({ name, email, password }) }),
-  
-  me: () => request('/auth/me'),
+  /**
+   * POST /auth/login/ → {access, refresh}
+   * Then GET /auth/me/ → user profile.
+   * Returns {user, token} for AuthContext compatibility.
+   */
+  login: async (email, password) => {
+    const tokens = await request(() =>
+      api.post('/auth/login/', { email, password }),
+    );
+    localStorage.setItem(ACCESS_KEY, tokens.access);
+    localStorage.setItem(REFRESH_KEY, tokens.refresh);
+
+    const userData = await request(() => api.get('/auth/me/'));
+    const user = normalizeUser(userData);
+    localStorage.setItem('dz_rentit_user', JSON.stringify(user));
+    return { user, token: tokens.access };
+  },
+
+  /**
+   * POST /auth/register/ → 201 (user created)
+   * Then auto-login to obtain tokens.
+   */
+  register: async (name, email, password) => {
+    await request(() =>
+      api.post('/auth/register/', {
+        username: name.toLowerCase().replace(/\s+/g, '_'),
+        email,
+        password,
+        first_name: name.split(' ')[0] || name,
+        last_name: name.split(' ').slice(1).join(' ') || '',
+      }),
+    );
+    // Auto-login after successful registration
+    return authAPI.login(email, password);
+  },
+
+  /** GET /auth/me/ → current user profile. */
+  me: async () => {
+    const data = await request(() => api.get('/auth/me/'));
+    return { user: normalizeUser(data) };
+  },
+
+  /** PUT /auth/me/ → update profile. */
+  updateProfile: async (updates) => {
+    const payload = {};
+    if (updates.name) {
+      payload.first_name = updates.name.split(' ')[0] || updates.name;
+      payload.last_name = updates.name.split(' ').slice(1).join(' ') || '';
+    }
+    if (updates.phone !== undefined) payload.phone = updates.phone;
+    if (updates.bio !== undefined) payload.bio = updates.bio;
+    if (updates.location !== undefined) payload.location = updates.location;
+    const data = await request(() => api.put('/auth/me/', payload));
+    return { user: normalizeUser(data) };
+  },
 };
+
+// ─── Items API ──────────────────────────────────────────────────────────────
 
 export const itemsAPI = {
-  getAll: (params) => request('/items'),
-  getById: (id) => request(`/items/${id}`),
-  create: (data) => request('/items', { method: 'POST', body: JSON.stringify(data) }),
-  update: (id, data) => request(`/items/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-  delete: (id) => request(`/items/${id}`, { method: 'DELETE' }),
+  /** GET /items/ → paginated list. */
+  getAll: async (params) => {
+    const data = await request(() => api.get('/items/', { params }));
+    const results = unwrapList(data);
+    return { items: results.map(normalizeItem), total: data.count || results.length };
+  },
+
+  /** GET /items/{id}/ → single item detail. */
+  getById: async (id) => {
+    const data = await request(() => api.get(`/items/${id}/`));
+    return { item: normalizeItem(data) };
+  },
+
+  /** POST /items/ — convert frontend field names to backend. */
+  create: async (itemData) => {
+    const payload = {
+      title: itemData.title,
+      description: itemData.description,
+      category: itemData.categoryId || itemData.category,
+      condition: itemData.condition,
+      price_per_day: itemData.price,
+      deposit_amount: itemData.deposit,
+      location: itemData.location,
+    };
+    const data = await request(() => api.post('/items/', payload));
+    return { item: normalizeItem(data) };
+  },
+
+  /** PUT /items/{id}/ */
+  update: async (id, itemData) => {
+    const payload = {};
+    if (itemData.title !== undefined) payload.title = itemData.title;
+    if (itemData.description !== undefined) payload.description = itemData.description;
+    if (itemData.categoryId || itemData.category) payload.category = itemData.categoryId || itemData.category;
+    if (itemData.condition !== undefined) payload.condition = itemData.condition;
+    if (itemData.price !== undefined) payload.price_per_day = itemData.price;
+    if (itemData.deposit !== undefined) payload.deposit_amount = itemData.deposit;
+    if (itemData.location !== undefined) payload.location = itemData.location;
+    if (itemData.available !== undefined) payload.is_active = itemData.available;
+    const data = await request(() => api.put(`/items/${id}/`, payload));
+    return { item: normalizeItem(data) };
+  },
+
+  /** DELETE /items/{id}/ */
+  delete: async (id) => {
+    await request(() => api.delete(`/items/${id}/`));
+    return { success: true };
+  },
 };
+
+// ─── Bookings API ───────────────────────────────────────────────────────────
 
 export const bookingsAPI = {
-  getAll: () => request('/bookings'),
-  create: (data) => request('/bookings', { method: 'POST', body: JSON.stringify(data) }),
-  approve: (id) => request(`/bookings/${id}/approve`, { method: 'PATCH' }),
-  reject: (id) => request(`/bookings/${id}/reject`, { method: 'PATCH' }),
-  cancel: (id) => request(`/bookings/${id}/cancel`, { method: 'PATCH' }),
+  /** GET /bookings/my/?role= → user's bookings. */
+  getAll: async (role = 'both') => {
+    const data = await request(() =>
+      api.get('/bookings/my/', { params: { role } }),
+    );
+    const results = unwrapList(data);
+    return { bookings: results.map(normalizeBooking) };
+  },
+
+  /** GET /bookings/{id}/ */
+  getById: async (id) => {
+    const data = await request(() => api.get(`/bookings/${id}/`));
+    return { booking: normalizeBooking(data) };
+  },
+
+  /** POST /bookings/ — only item_id + dates; backend calculates pricing. */
+  create: async ({ itemId, startDate, endDate }) => {
+    const data = await request(() =>
+      api.post('/bookings/', {
+        item_id: itemId,
+        start_date: startDate,
+        end_date: endDate,
+      }),
+    );
+    return { booking: normalizeBooking(data) };
+  },
+
+  approve: async (id) => {
+    const data = await request(() => api.patch(`/bookings/${id}/approve/`));
+    return { booking: normalizeBooking(data) };
+  },
+
+  reject: async (id) => {
+    const data = await request(() => api.patch(`/bookings/${id}/reject/`));
+    return { booking: normalizeBooking(data) };
+  },
+
+  cancel: async (id) => {
+    const data = await request(() => api.patch(`/bookings/${id}/cancel/`));
+    return { booking: normalizeBooking(data) };
+  },
+
+  complete: async (id) => {
+    const data = await request(() => api.patch(`/bookings/${id}/complete/`));
+    return { booking: normalizeBooking(data) };
+  },
+
+  paymentPending: async (id) => {
+    const data = await request(() =>
+      api.patch(`/bookings/${id}/payment-pending/`),
+    );
+    return { booking: normalizeBooking(data) };
+  },
 };
+
+// ─── Reviews API ────────────────────────────────────────────────────────────
 
 export const reviewsAPI = {
-  getForItem: (itemId) => request(`/items/${itemId}/reviews`),
-  create: (data) => request('/reviews', { method: 'POST', body: JSON.stringify(data) }),
+  /** GET /items/{id}/reviews/ → plain array. */
+  getForItem: async (itemId) => {
+    const data = await request(() => api.get(`/items/${itemId}/reviews/`));
+    const results = unwrapList(data);
+    return { reviews: results.map(normalizeReview) };
+  },
+
+  /** POST /reviews/ — only booking_id + rating + comment. */
+  create: async (params) => {
+    const data = await request(() =>
+      api.post('/reviews/', {
+        booking_id: params.bookingId,
+        rating: params.rating,
+        comment: params.comment,
+      }),
+    );
+    return { review: normalizeReview(data) };
+  },
 };
+
+// ─── Messages API ───────────────────────────────────────────────────────────
 
 export const messagesAPI = {
-  getConversations: () => request('/conversations'),
-  getMessages: (conversationId) => request(`/conversations/${conversationId}/messages`),
-  sendMessage: (conversationId, data) =>
-    request(`/conversations/${conversationId}/messages`, { method: 'POST', body: JSON.stringify(data) }),
+  /** GET /conversations/ → list of user's conversations. */
+  getConversations: async () => {
+    const data = await request(() => api.get('/conversations/'));
+    const results = unwrapList(data);
+    return { conversations: results.map(normalizeConversation) };
+  },
+
+  /** GET /conversations/by-booking/{bookingId}/ → {conversation, messages}. */
+  getByBooking: async (bookingId) => {
+    const data = await request(() =>
+      api.get(`/conversations/by-booking/${bookingId}/`),
+    );
+    return {
+      conversation: normalizeConversation(data.conversation),
+      messages: (data.messages || []).map(normalizeMessage),
+    };
+  },
+
+  /** POST /conversations/by-booking/{bookingId}/messages/ */
+  sendMessage: async (bookingId, { content }) => {
+    const data = await request(() =>
+      api.post(`/conversations/by-booking/${bookingId}/messages/`, { content }),
+    );
+    return { message: normalizeMessage(data) };
+  },
 };
+
+// ─── Availability API ───────────────────────────────────────────────────────
 
 export const availabilityAPI = {
-  getForItem: (itemId) => request(`/items/${itemId}/availability`),
-  update: (itemId, dates) =>
-    request(`/items/${itemId}/availability`, { method: 'PATCH', body: JSON.stringify({ dates }) }),
+  /** GET /items/{id}/availability/?from_date=&to_date= */
+  getForItem: async (itemId, fromDate, toDate) => {
+    const data = await request(() =>
+      api.get(`/items/${itemId}/availability/`, {
+        params: { from_date: fromDate, to_date: toDate },
+      }),
+    );
+    return { availability: data };
+  },
 };
 
+// ─── Categories API ─────────────────────────────────────────────────────────
+
 export const categoriesAPI = {
-  getAll: () => request('/categories'),
+  /** GET /categories/ — no pagination. */
+  getAll: async () => {
+    const data = await request(() => api.get('/categories/'));
+    const results = unwrapList(data);
+    return { categories: results };
+  },
 };

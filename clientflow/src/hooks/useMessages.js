@@ -1,16 +1,18 @@
 /**
  * DZ-RentIt — useMessages Hook
  * ==============================
- * 
+ *
  * Messaging system logic:
  * - Fetch conversation list
- * - Fetch messages for a conversation
+ * - Fetch messages for a conversation (via its booking ID)
  * - Send message
- * - Mark as read
  * - Linked to bookingId for context
- * 
- * ARCHITECTURE: Structured for future WebSocket upgrade.
- * Currently polling-based, but the interface supports real-time injection.
+ *
+ * BACKEND PATTERN:
+ * The API uses "by-booking/{bookingId}" endpoints.
+ * openConversation() accepts a conversationId, looks up the
+ * associated bookingId from the conversations list, and uses
+ * the by-booking endpoint to fetch messages.
  */
 
 import { useState, useCallback, useMemo } from 'react';
@@ -19,6 +21,7 @@ import { messagesAPI } from '../services/api.js';
 export default function useMessages(currentUserId) {
   const [conversations, setConversations] = useState([]);
   const [activeConversationId, setActiveConversationId] = useState(null);
+  const [activeBookingId, setActiveBookingId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -37,32 +40,43 @@ export default function useMessages(currentUserId) {
   }, []);
 
   // ── Open a conversation and load messages ────────────────────────────────
+  // Accepts a conversationId, looks up the bookingId, uses by-booking endpoint
   const openConversation = useCallback(async (conversationId) => {
     setActiveConversationId(conversationId);
     setLoading(true);
     try {
-      const { messages: data } = await messagesAPI.getMessages(conversationId);
+      // Find the conversation to get its bookingId
+      const conv = conversations.find((c) => c.id === conversationId);
+      const bookingId = conv?.bookingId;
+
+      if (!bookingId) {
+        setMessages([]);
+        setActiveBookingId(null);
+        return;
+      }
+
+      setActiveBookingId(bookingId);
+      const { messages: data } = await messagesAPI.getByBooking(bookingId);
       setMessages(data);
     } catch (err) {
       setError(err.message);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [conversations]);
 
   // ── Send a message ───────────────────────────────────────────────────────
   const sendMessage = useCallback(async (text) => {
-    if (!activeConversationId || !text.trim()) return;
-    
+    if (!activeBookingId || !text.trim()) return;
+
     setLoading(true);
     setError(null);
     try {
-      const { message } = await messagesAPI.sendMessage(activeConversationId, {
-        senderId: currentUserId,
-        text: text.trim(),
+      const { message } = await messagesAPI.sendMessage(activeBookingId, {
+        content: text.trim(),
       });
 
-      // Optimistic — prepend to messages
+      // Append to messages
       setMessages((prev) => [...prev, message]);
 
       // Update conversation's lastMessage
@@ -81,7 +95,7 @@ export default function useMessages(currentUserId) {
     } finally {
       setLoading(false);
     }
-  }, [activeConversationId, currentUserId]);
+  }, [activeBookingId, activeConversationId]);
 
   // ── Derived state ─────────────────────────────────────────────────────────
   const activeConversation = useMemo(
@@ -95,14 +109,15 @@ export default function useMessages(currentUserId) {
   );
 
   /**
-   * Start or find a conversation with a specific user about an item/booking.
-   * If conversation exists → open it. Otherwise → create new.
+   * Start or find a conversation with a specific user about a booking.
+   * If conversation exists → open it. Otherwise → open via booking endpoint.
    */
   const startConversation = useCallback(async (otherUserId, itemId, bookingId) => {
-    // Check if conversation already exists
+    // Check if conversation already exists for this booking
     const existing = conversations.find((c) =>
-      c.participants?.includes(otherUserId) &&
-      (c.itemId === itemId || c.bookingId === bookingId)
+      c.bookingId === bookingId ||
+      (c.participants?.includes(otherUserId) &&
+        (c.itemId === itemId || c.bookingId === bookingId))
     );
 
     if (existing) {
@@ -110,29 +125,33 @@ export default function useMessages(currentUserId) {
       return existing;
     }
 
-    // Create new conversation (mock)
-    const newConvo = {
-      id: 'conv-' + Date.now(),
-      participants: [currentUserId, otherUserId],
-      itemId,
-      bookingId,
-      lastMessage: null,
-      unreadCount: 0,
-      updatedAt: new Date().toISOString(),
-    };
+    // For a new conversation, use the by-booking endpoint directly
+    if (bookingId) {
+      setActiveBookingId(bookingId);
+      setLoading(true);
+      try {
+        const { conversation, messages: msgs } = await messagesAPI.getByBooking(bookingId);
+        setConversations((prev) => [conversation, ...prev]);
+        setActiveConversationId(conversation.id);
+        setMessages(msgs);
+        return conversation;
+      } catch (err) {
+        setError(err.message);
+        throw err;
+      } finally {
+        setLoading(false);
+      }
+    }
 
-    setConversations((prev) => [newConvo, ...prev]);
-    setActiveConversationId(newConvo.id);
-    setMessages([]);
-
-    return newConvo;
-  }, [conversations, currentUserId, openConversation]);
+    return null;
+  }, [conversations, openConversation]);
 
   return {
     conversations,
     messages,
     activeConversation,
     activeConversationId,
+    activeBookingId,
     totalUnread,
     loading,
     error,

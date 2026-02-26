@@ -1,28 +1,23 @@
 /**
  * DZ-RentIt — useBooking Hook
  * ==============================
- * 
+ *
  * Manages the booking lifecycle with proper state transitions.
- * 
+ *
  * BOOKING LIFECYCLE:
  * pending → approved → payment_pending → completed
  *        → rejected
  *        → cancelled (from any active state)
- * 
- * DOUBLE-BOOKING PREVENTION:
- * Before creating a booking, validates date range against availability.
- * If conflict detected → returns error, booking is NOT created.
- * 
- * AUTO-CANCEL:
- * Bookings in 'pending' state for >48h are flagged as expired.
- * Frontend displays warning; actual cancellation deferred to backend cron.
+ *
+ * The backend handles pricing calculation and conflict detection.
+ * This hook sends only {item_id, start_date, end_date} and receives
+ * the fully computed booking back.
  */
 
 import { useState, useCallback, useMemo } from 'react';
 import { bookingsAPI } from '../services/api.js';
 import { BookingStatus, BookingTransitions } from '../types/index.js';
-import { checkDateConflicts, isBookingExpired } from '../utils/dates.js';
-import { calculateRentalPrice } from '../utils/pricing.js';
+import { isBookingExpired } from '../utils/dates.js';
 import { validateBookingRequest } from '../utils/validation.js';
 
 export default function useBooking() {
@@ -51,25 +46,23 @@ export default function useBooking() {
 
   /**
    * Create a new booking request.
-   * 
-   * CRITICAL FLOW:
-   * 1. Validate input (dates, owner ≠ renter)
-   * 2. Check for date conflicts
-   * 3. Calculate pricing
-   * 4. Submit to API
-   * 5. Optimistically add to local state
-   * 
+   *
+   * SIMPLIFIED FLOW (backend handles pricing + conflicts):
+   * 1. Validate input (dates, owner ≠ renter) — instant UX feedback
+   * 2. Submit {item_id, start_date, end_date} to API
+   * 3. Optimistically add returned booking to local state
+   *
    * @param {Object} params
    * @param {Object} params.item - The item being booked
    * @param {string} params.startDate
    * @param {string} params.endDate
-   * @param {string} params.renterId
-   * @param {Object} params.availabilityMap
+   * @param {string} [params.renterId]
+   * @param {Object} [params.availabilityMap] - unused, kept for backwards compat
    */
-  const createBooking = useCallback(async ({ item, startDate, endDate, renterId, availabilityMap }) => {
+  const createBooking = useCallback(async ({ item, startDate, endDate, renterId }) => {
     setError(null);
 
-    // Step 1: Validate
+    // Basic validation for instant UX feedback
     const validation = validateBookingRequest({
       startDate,
       endDate,
@@ -82,34 +75,17 @@ export default function useBooking() {
       throw new Error(errMsg);
     }
 
-    // Step 2: Check conflicts
-    const { hasConflict, conflictDates } = checkDateConflicts(startDate, endDate, availabilityMap || {});
-    if (hasConflict) {
-      const errMsg = `Selected dates conflict with existing bookings: ${conflictDates.join(', ')}`;
-      setError(errMsg);
-      throw new Error(errMsg);
-    }
-
-    // Step 3: Calculate pricing
-    const pricing = calculateRentalPrice(item.price, startDate, endDate);
-
-    // Step 4: Submit
+    // Submit — backend calculates pricing and checks conflicts
     setLoading(true);
     try {
-      const payload = {
+      const { booking } = await bookingsAPI.create({
         itemId: item.id,
-        renterId,
-        ownerId: item.owner?.id || item.ownerId,
         startDate,
         endDate,
-        ...pricing,
-        deposit: item.deposit,
-      };
+      });
 
-      const { booking } = await bookingsAPI.create(payload);
-
-      // Step 5: Optimistic update
-      setBookings((prev) => [{ ...booking, ...payload, isExpired: false }, ...prev]);
+      // Optimistic update with full booking from backend
+      setBookings((prev) => [{ ...booking, isExpired: false }, ...prev]);
 
       return booking;
     } catch (err) {
@@ -137,6 +113,7 @@ export default function useBooking() {
       approve: BookingStatus.APPROVED,
       reject: BookingStatus.REJECTED,
       cancel: BookingStatus.CANCELLED,
+      complete: BookingStatus.COMPLETED,
     }[action];
 
     if (!targetStatus || !allowedNext.includes(targetStatus)) {
@@ -151,6 +128,7 @@ export default function useBooking() {
         approve: () => bookingsAPI.approve(bookingId),
         reject: () => bookingsAPI.reject(bookingId),
         cancel: () => bookingsAPI.cancel(bookingId),
+        complete: () => bookingsAPI.complete(bookingId),
       }[action];
 
       const { booking: updated } = await apiCall();
@@ -192,5 +170,6 @@ export default function useBooking() {
     approveBooking: (id) => transitionBooking(id, 'approve'),
     rejectBooking: (id) => transitionBooking(id, 'reject'),
     cancelBooking: (id) => transitionBooking(id, 'cancel'),
+    completeBooking: (id) => transitionBooking(id, 'complete'),
   };
 }
