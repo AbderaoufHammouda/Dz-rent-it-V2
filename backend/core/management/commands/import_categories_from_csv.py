@@ -91,7 +91,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING('[DRY RUN] Validation passed. No data modified.'))
             for row in rows:
                 parent_info = f' (parent: {row["parent_slug"]})' if row.get('parent_slug') else ''
-                self.stdout.write(f'  ✓ {row["name"]} [{row["slug"]}]{parent_info}')
+                self.stdout.write(f'  [OK] {row["name"]} [{row["slug"]}]{parent_info}')
             return
 
         # Import within a transaction
@@ -183,7 +183,7 @@ class Command(BaseCommand):
                 if not parent:
                     # Should not happen after validation, but defensive
                     self.stderr.write(self.style.WARNING(
-                        f'  ⚠ Skipping "{name}": parent "{parent_slug}" not found.'
+                        f'  [WARN] Skipping "{name}": parent "{parent_slug}" not found.'
                     ))
                     skipped += 1
                     continue
@@ -199,11 +199,11 @@ class Command(BaseCommand):
                     existing.save()
                     slug_cache[slug] = existing
                     updated += 1
-                    self.stdout.write(f'  ↻ Updated: {name} [{slug}]')
+                    self.stdout.write(f'  [UPD] Updated: {name} [{slug}]')
                 else:
                     slug_cache[slug] = existing
                     skipped += 1
-                    self.stdout.write(f'  — Skipped (exists): {name} [{slug}]')
+                    self.stdout.write(f'  [SKIP] Skipped (exists): {name} [{slug}]')
             else:
                 cat = Category.objects.create(
                     name=name,
@@ -213,6 +213,6 @@ class Command(BaseCommand):
                 )
                 slug_cache[slug] = cat
                 created += 1
-                self.stdout.write(f'  + Created: {name} [{slug}]')
+                self.stdout.write(f'  [NEW] Created: {name} [{slug}]')
 
         return created, updated, skipped

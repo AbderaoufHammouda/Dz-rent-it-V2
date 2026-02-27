@@ -1,0 +1,14 @@
+# ── DZ-RentIt Backend Dependencies ──
+Django==5.1.7
+djangorestframework==3.15.2
+djangorestframework-simplejwt==5.5.1
+django-filter==24.3
+django-cors-headers==4.6.0
+django-environ==0.13.0
+psycopg2-binary==2.9.10
+
+# ── Production WSGI server ──
+gunicorn==23.0.0
+
+# ── Dev / Test utilities ──
+requests>=2.31.0

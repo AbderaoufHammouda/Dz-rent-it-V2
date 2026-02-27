@@ -815,11 +815,13 @@ class Conversation(models.Model):
     )
     booking = models.ForeignKey(
         Booking,
-        on_delete=models.SET_NULL,
+        on_delete=models.CASCADE,
         null=True,
         blank=True,
         related_name='conversations',
-        help_text='Optional: the booking this conversation is about.',
+        help_text='Optional: the booking this conversation is about. '
+                  'CASCADE: deleting a booking removes its conversation '
+                  '(prevents SET_NULL conflicts with the partial unique constraint).',
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -837,6 +839,13 @@ class Conversation(models.Model):
             models.UniqueConstraint(
                 fields=['participant_1', 'participant_2', 'booking'],
                 name='uq_conversation_participants_booking',
+            ),
+            # PostgreSQL treats NULL as distinct in unique constraints,
+            # so we need a separate partial constraint for booking IS NULL
+            models.UniqueConstraint(
+                fields=['participant_1', 'participant_2'],
+                condition=models.Q(booking__isnull=True),
+                name='uq_conversation_participants_no_booking',
             ),
         ]
         verbose_name = 'Conversation'
