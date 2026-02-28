@@ -1,0 +1,49 @@
+# ── Python ───────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── Environment / secrets ────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Version control ──────────────────────────────────────────
+.git/
+.gitignore
+
+# ── Virtual environments ─────────────────────────────────────
+venv/
+.venv/
+env/
+
+# ── Node (frontend) ─────────────────────────────────────────
+node_modules/
+
+# ── Media uploads (stored externally in prod) ────────────────
+media/
+
+# ── Collected static (rebuilt during docker build) ───────────
+staticfiles/
+
+# ── IDE / Editor ─────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── QA / dev-only artifacts ──────────────────────────────────
+qa_tests_*.py
+_qa_dry_test.csv
+QA_REPORT.md
+AUDIT_REPORT.md
+ARCHITECTURE.md
+
+# ── Docker ───────────────────────────────────────────────────
+Dockerfile
+docker-compose*.yml
+.dockerignore
